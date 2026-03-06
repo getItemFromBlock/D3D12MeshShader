@@ -164,7 +164,7 @@ MComPtr<IDXGIFactory6> factory; // VkInstance -> IDXGIFactory
 // === Device === /* 0002 */
 
 // Don't need to keep Adapter (physical Device) reference: only use Logical.
-MComPtr<ID3D12Device> device; // VkDevice -> ID3D12Device
+MComPtr<ID3D12Device2> device; // VkDevice -> ID3D12Device
 
 MComPtr<ID3D12CommandQueue> graphicsQueue; // VkQueue -> ID3D12CommandQueue
 // No PresentQueue needed (already handleled by Swapchain).
@@ -380,9 +380,12 @@ MComPtr<ID3DBlob> CompileShader(std::wstring _path, std::wstring _entry, std::ws
 // = Lit =
 MComPtr<ID3DBlob> litVertexShader; // VkShaderModule -> ID3DBlob
 MComPtr<ID3DBlob> litPixelShader;
+MComPtr<ID3DBlob> ampShader;
+MComPtr<ID3DBlob> meshShader;
 
 MComPtr<ID3D12RootSignature> litRootSign; // VkPipelineLayout -> ID3D12RootSignature /* 0008-1 */
 MComPtr<ID3D12PipelineState> litPipelineState; // VkPipeline -> ID3D12PipelineState
+MComPtr<ID3D12PipelineState> meshPipelineState; // VkPipeline -> ID3D12PipelineState
 
 
 // === Scene Objects === /* 0009 */
@@ -685,16 +688,16 @@ void GenerateMipMapsCPU(SA::Vec2ui _extent, std::vector<char>& _data, uint32_t& 
 	}
 }
 
-// = Sphere =
-std::array<MComPtr<ID3D12Resource>, 4> sphereVertexBuffers; // VkBuffer -> ID3D12Resource
+// = Base sponge cube =
+std::array<MComPtr<ID3D12Resource>, 4> cubeVertexBuffers; // VkBuffer -> ID3D12Resource
 /**
 * Vulkan binds the buffer directly
 * DirectX12 create 'views' (aka. how to read the memory) of buffers and use them for binding.
 */
-std::array<D3D12_VERTEX_BUFFER_VIEW, 4> sphereVertexBufferViews;
-uint32_t sphereIndexCount = 0u;
-MComPtr<ID3D12Resource> sphereIndexBuffer;
-D3D12_INDEX_BUFFER_VIEW sphereIndexBufferView;
+std::array<D3D12_VERTEX_BUFFER_VIEW, 4> cubeVertexBufferViews;
+uint32_t cubeIndexCount = 0u;
+MComPtr<ID3D12Resource> cubeIndexBuffer;
+D3D12_INDEX_BUFFER_VIEW cubeIndexBufferView;
 
 // = RustedIron2 PBR =
 MComPtr<ID3D12Resource> rustedIron2AlbedoTexture; // VkImage + VkDeviceMemory -> ID3D12Resource
@@ -1376,19 +1379,21 @@ int main()
 							return EXIT_FAILURE;
 					}
 
-					// Amplification Shader
+					// Amplification Shader - Not actually needed for the sponge
+					/*
 					{
-						litPixelShader = CompileShader(L"Resources/Shaders/HLSL/AmpShader.hlsl", L"main", L"ps_6_7");
+						ampShader = CompileShader(L"Resources/Shaders/HLSL/AmpShader.hlsl", L"main", L"ps_6_7");
 
-						if (!litPixelShader)
+						if (!ampShader)
 							return EXIT_FAILURE;
 					}
+					*/
 
 					// Mesh Shader
 					{
-						litPixelShader = CompileShader(L"Resources/Shaders/HLSL/MeshShader.hlsl", L"main", L"ps_6_7");
+						meshShader = CompileShader(L"Resources/Shaders/HLSL/MeshShader.hlsl", L"main", L"ps_6_7");
 
-						if (!litPixelShader)
+						if (!meshShader)
 							return EXIT_FAILURE;
 					}
 
@@ -1503,60 +1508,11 @@ int main()
 								.InstanceDataStepRate = 0
 							}
 						};
-						const D3D12_INPUT_LAYOUT_DESC inputLayout{
-							.pInputElementDescs = inputElems,
-							.NumElements = _countof(inputElems)
-						};
-
-
-						const D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{
-							.pRootSignature = litRootSign.Get(),
-
-							.VS{
-								.pShaderBytecode = litVertexShader->GetBufferPointer(),
-								.BytecodeLength = litVertexShader->GetBufferSize()
-							},
-							.PS{
-								.pShaderBytecode = litPixelShader->GetBufferPointer(),
-								.BytecodeLength = litPixelShader->GetBufferSize()
-							},
-
-							.StreamOutput = {},
-							.BlendState = blendState,
-							.SampleMask = UINT_MAX,
-
-							.RasterizerState = raster,
-							.InputLayout = inputLayout,
-
-							.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
-
-							.NumRenderTargets = 1,
-							.RTVFormats{
-								sceneColorFormat
-							},
-							.DSVFormat = sceneDepthFormat,
-
-							.SampleDesc
-							{
-								.Count = 1,
-								.Quality = 0,
-							},
-
-							.NodeMask = 0,
-
-							.CachedPSO
-							{
-								.pCachedBlob = nullptr,
-								.CachedBlobSizeInBytes = 0,
-							},
-
-							.Flags = D3D12_PIPELINE_STATE_FLAG_NONE,
-						};
 
 						D3DX12_MESH_SHADER_PIPELINE_STATE_DESC psoDesc = {};
 						psoDesc.pRootSignature    = litRootSign.Get();
-						psoDesc.AS                = { ampShader.data, ampShader.size };
-						psoDesc.MS                = { meshShader.data, meshShader.size };
+						psoDesc.AS                = { ampShader->GetBufferPointer(), ampShader->GetBufferSize() };
+						psoDesc.MS                = { meshShader->GetBufferPointer(), meshShader->GetBufferSize() };
 						psoDesc.PS                = { litPixelShader->GetBufferPointer(), litPixelShader->GetBufferSize() };
 						psoDesc.NumRenderTargets  = 1;
 						psoDesc.RTVFormats[0]     = sceneColorFormat;
@@ -1569,7 +1525,12 @@ int main()
 
 						auto meshStreamDesc = CD3DX12_PIPELINE_MESH_STATE_STREAM(psoDesc);
 
-						const HRESULT hrCreatePipeline = device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&litPipelineState));
+						D3D12_PIPELINE_STATE_STREAM_DESC streamDesc = {};
+						streamDesc.SizeInBytes                   = sizeof(meshStreamDesc);
+						streamDesc.pPipelineStateSubobjectStream = &meshStreamDesc;
+
+						const HRESULT hrCreatePipeline = device->CreatePipelineState(&streamDesc, IID_PPV_ARGS(&litPipelineState));
+						//const HRESULT hrCreatePipeline = device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&litPipelineState));
 						if (FAILED(hrCreatePipeline))
 						{
 							SA_LOG(L"Create Lit PipelineState failed!", Error, DX12, (L"Error Code: %1", hrCreatePipeline));
@@ -1818,7 +1779,7 @@ int main()
 								.Flags = D3D12_RESOURCE_FLAG_NONE,
 							};
 
-							const HRESULT hrBufferCreated = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&sphereVertexBuffers[0]));
+							const HRESULT hrBufferCreated = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&cubeVertexBuffers[0]));
 							if (FAILED(hrBufferCreated))
 							{
 								SA_LOG(L"Create Sphere Vertex Position Buffer failed!", Error, DX12, (L"Error code: %1", hrBufferCreated));
@@ -1832,7 +1793,7 @@ int main()
 								SA_LOG(L"Create Sphere Vertex Position Buffer success.", Info, DX12, (L"\"%1\" [%2]", name, sphereVertexBuffers[0].Get()));
 							}
 
-							sphereVertexBufferViews[0] = D3D12_VERTEX_BUFFER_VIEW{
+							cubeVertexBufferViews[0] = D3D12_VERTEX_BUFFER_VIEW{
 								.BufferLocation = sphereVertexBuffers[0]->GetGPUVirtualAddress(),
 								.SizeInBytes = static_cast<UINT>(desc.Width),
 								.StrideInBytes = sizeof(SA::Vec3f),
