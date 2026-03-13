@@ -2,16 +2,14 @@
 
 //-------------------- Vertex Shader --------------------
 
+/*
 //---------- Bindings ----------
 struct Camera
 {
 	/// Camera transformation matrix.
 	float4x4 view;
 
-	/**
-	*	Camera inverse view projection matrix.
-	*	projection * inverseView.
-	*/
+	
 	float4x4 invViewProj;
 };
 cbuffer CameraBuffer : register(b0)
@@ -28,7 +26,6 @@ cbuffer ObjectBuffer : register(b1)
 {
 	Object object;
 };
-
 
 VertexOutput mainVS(VertexFactory _input)
 {
@@ -55,8 +52,7 @@ VertexOutput mainVS(VertexFactory _input)
 
 	return output;
 }
-
-
+*/
 
 //-------------------- Pixel Shader --------------------
 

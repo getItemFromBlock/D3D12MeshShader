@@ -228,7 +228,7 @@ std::array<MComPtr<ID3D12CommandAllocator>, bufferingCount> cmdAllocs;
 * /!\ with DirectX12, for graphics operations, the 'CommandList' type is not enough. ID3D12GraphicsCommandList must be used.
 * Like for Vulkan, we allocate 1 command buffer per frame.
 */
-MComPtr<ID3D12GraphicsCommandList1> cmdList;
+MComPtr<ID3D12GraphicsCommandList6> cmdList;
 
 
 // === Scene Textures === /* 0005 */
@@ -299,6 +299,7 @@ MComPtr<ID3DBlob> Native_CompileShader(std::wstring _path, std::string _entry, s
 #include <dxc/dxcapi.h>
 MComPtr<IDxcUtils> shaderCompilerUtils;
 MComPtr<IDxcCompiler3> shaderCompiler;
+IDxcIncludeHandler *includeHandler;
 MComPtr<ID3DBlob> CompileShader(std::wstring _path, std::wstring _entry, std::wstring _target, std::vector<std::wstring> _defines = {})
 {
 	MComPtr<IDxcBlobEncoding> blob;
@@ -328,8 +329,8 @@ MComPtr<ID3DBlob> CompileShader(std::wstring _path, std::wstring _entry, std::ws
 		DXC_ARG_PACK_MATRIX_ROW_MAJOR,
 		DXC_ARG_ALL_RESOURCES_BOUND,
 		/* Add include path for shader includer (Warning: must work both from VS and standalone .exe) */
-		//L"-I",
-		//L"/Resources/Shaders/HLSL"
+		L"-I",
+		L"/Resources/Shaders/HLSL"
 	};
 
 #if SA_DEBUG
@@ -349,9 +350,8 @@ MComPtr<ID3DBlob> CompileShader(std::wstring _path, std::wstring _entry, std::ws
 		cArgs.push_back(define.c_str());
 	}
 
-
 	MComPtr<IDxcResult> result;
-	shaderCompiler->Compile(&dx, cArgs.data(), static_cast<uint32_t>(cArgs.size()), nullptr /*&includer*/, IID_PPV_ARGS(&result));
+	shaderCompiler->Compile(&dx, cArgs.data(), static_cast<uint32_t>(cArgs.size()), includeHandler, IID_PPV_ARGS(&result));
 
 	HRESULT hr;
 	result->GetStatus(&hr);
@@ -382,7 +382,7 @@ MComPtr<ID3DBlob> litVertexShader; // VkShaderModule -> ID3DBlob
 MComPtr<ID3DBlob> litPixelShader;
 MComPtr<ID3DBlob> ampShader;
 MComPtr<ID3DBlob> meshShader;
-const uint32_t threadCount = 32;
+const uint32_t threadCount = 24;
 
 MComPtr<ID3D12RootSignature> litRootSign; // VkPipelineLayout -> ID3D12RootSignature /* 0008-1 */
 MComPtr<ID3D12PipelineState> litPipelineState; // VkPipeline -> ID3D12PipelineState
@@ -410,10 +410,11 @@ std::array<MComPtr<ID3D12Resource>, bufferingCount> cameraBuffers;
 // = Object Buffer =
 struct ObjectUBO
 {
-	SA::Mat4f transform;
+	SA::Mat4f	transform;
+	uint32_t	level;
 };
 constexpr SA::Vec3f cubePosition(0.5f, 0.0f, 2.0f);
-MComPtr<ID3D12Resource> cubeObjectBuffer;
+std::array<MComPtr<ID3D12Resource>, bufferingCount> cubeObjectBuffers;
 
 // = PointLights Buffer =
 struct PointLightUBO
@@ -689,13 +690,22 @@ void GenerateMipMapsCPU(SA::Vec2ui _extent, std::vector<char>& _data, uint32_t& 
 	}
 }
 
+struct Vertex
+{
+	SA::Vec3f position;
+	float U;
+	SA::Vec3f normal;
+	float V;
+	SA::Vec4f tangent;
+};
+
 // = Base sponge cube =
-std::array<MComPtr<ID3D12Resource>, 4> cubeVertexBuffers; // VkBuffer -> ID3D12Resource
+MComPtr<ID3D12Resource> cubeVertexBuffer; // VkBuffer -> ID3D12Resource
 /**
 * Vulkan binds the buffer directly
 * DirectX12 create 'views' (aka. how to read the memory) of buffers and use them for binding.
 */
-std::array<D3D12_VERTEX_BUFFER_VIEW, 4> cubeVertexBufferViews;
+D3D12_VERTEX_BUFFER_VIEW cubeVertexBufferView;
 uint32_t cubeIndexCount = 0u;
 MComPtr<ID3D12Resource> cubeIndexBuffer;
 D3D12_INDEX_BUFFER_VIEW cubeIndexBufferView;
@@ -1199,6 +1209,13 @@ int main()
 						SA_LOG(L"Create DXC Shader Compiler Instance failed!", Error, DXC, (L"Error Code: %1", hCreateInstance));
 						return EXIT_FAILURE;
 					}
+
+					const HRESULT hCreateInclude = shaderCompilerUtils->CreateDefaultIncludeHandler(&includeHandler);
+					if (FAILED(hCreateInstance))
+					{
+						SA_LOG(L"Create Include Handler failed!", Error, DXC, (L"Error Code: %1", hCreateInclude));
+						return EXIT_FAILURE;
+					}
 				}
 
 				// Lit
@@ -1364,14 +1381,14 @@ int main()
 
 
 					// Vertex Shader
-					if (true)
+					/*
 					{
 						litVertexShader = CompileShader(L"Resources/Shaders/HLSL/LitShader.hlsl", L"mainVS", L"vs_6_7");
 
 						if (!litVertexShader)
 							return EXIT_FAILURE;
 					}
-
+					*/
 					// Fragment Shader
 					{
 						litPixelShader = CompileShader(L"Resources/Shaders/HLSL/LitShader.hlsl", L"mainPS", L"ps_6_7");
@@ -1392,7 +1409,7 @@ int main()
 
 					// Mesh Shader
 					{
-						std::wstring def = L"NUM_THREADS=";
+						std::wstring def = L"NUM_THREADS=" + std::to_wstring(threadCount);
 						meshShader = CompileShader(L"Resources/Shaders/HLSL/MeshShader.hlsl", L"main", L"ps_6_7", {def});
 
 						if (!meshShader)
@@ -1638,26 +1655,21 @@ int main()
 						.Flags = D3D12_RESOURCE_FLAG_NONE,
 					};
 
-					const HRESULT hrBufferCreated = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&cubeObjectBuffer));
-					if (FAILED(hrBufferCreated))
+					for (uint32_t i = 0; i < bufferingCount; ++i)
 					{
-						SA_LOG(L"Create Cube Object Buffer failed!", Error, DX12, (L"Error code: %1", hrBufferCreated));
-						return EXIT_FAILURE;
-					}
-					else
-					{
-						const LPCWSTR name = L"CubeObjectBuffer";
-						cubeObjectBuffer->SetName(name);
+						const HRESULT hrBufferCreated = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&cubeObjectBuffers[i]));
+						if (FAILED(hrBufferCreated))
+						{
+							SA_LOG((L"Create Cube Object Buffer [%1] failed!", i), Error, DX12, (L"Error code: %1", hrBufferCreated));
+							return EXIT_FAILURE;
+						}
+						else
+						{
+							const std::wstring name = L"CubeObjectBuffer [" + std::to_wstring(i) + L"]";
+							cubeObjectBuffers[i]->SetName(name.c_str());
 
-						SA_LOG(L"Create Cube Object Buffer failed!", Info, DX12, (L"\"%1\" [%2]", name, cubeObjectBuffer.Get()));
-					}
-
-					const SA::Mat4f transform = SA::Mat4f::MakeTranslation(cubePosition);
-					const bool bSubmitSuccess = SubmitBufferToGPU(cubeObjectBuffer, desc.Width, &transform, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
-					if (!bSubmitSuccess)
-					{
-						SA_LOG(L"Cube Object Buffer submit failed!", Error, DX12);
-						return EXIT_FAILURE;
+							SA_LOG((L"Create Cube Object Buffer [%1] success!", i), Info, DX12, (L"\"%1\" [%2]", name, cubeObjectBuffers[i].Get()));
+						}
 					}
 				}
 
@@ -1755,7 +1767,7 @@ int main()
 
 						const aiMesh* inMesh = scene->mMeshes[0];
 
-						// Position
+						// Vertices
 						{
 							/**
 							* VkMemoryPropertyFlagBits -> D3D12_HEAP_PROPERTIES.Type
@@ -1771,7 +1783,7 @@ int main()
 							const D3D12_RESOURCE_DESC desc{
 								.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER,
 								.Alignment = 0,
-								.Width = sizeof(SA::Vec3f) * inMesh->mNumVertices,
+								.Width = sizeof(Vertex) * inMesh->mNumVertices,
 								.Height = 1,
 								.DepthOrArraySize = 1,
 								.MipLevels = 1,
@@ -1781,7 +1793,7 @@ int main()
 								.Flags = D3D12_RESOURCE_FLAG_NONE,
 							};
 
-							const HRESULT hrBufferCreated = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&cubeVertexBuffers[0]));
+							const HRESULT hrBufferCreated = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&cubeVertexBuffer));
 							if (FAILED(hrBufferCreated))
 							{
 								SA_LOG(L"Create Cube Vertex Position Buffer failed!", Error, DX12, (L"Error code: %1", hrBufferCreated));
@@ -1789,173 +1801,31 @@ int main()
 							}
 							else
 							{
-								const LPCWSTR name = L"CubeVertexPositionBuffer";
-								cubeVertexBuffers[0]->SetName(name);
+								const LPCWSTR name = L"CubeVertexBuffer";
+								cubeVertexBuffer->SetName(name);
 
-								SA_LOG(L"Create Cube Vertex Position Buffer success.", Info, DX12, (L"\"%1\" [%2]", name, cubeVertexBuffers[0].Get()));
+								SA_LOG(L"Create Cube Vertex Buffer success.", Info, DX12, (L"\"%1\" [%2]", name, cubeVertexBuffer.Get()));
+
+								Vertex *memory = nullptr;
+								cubeVertexBuffer->Map(0, nullptr, reinterpret_cast<void**>(&memory));
+								for (uint32_t i = 0; i < inMesh->mVertices->Length(); i++)
+								{
+									std::copy(&inMesh->mVertices[i].x, (&inMesh->mVertices[i].x) + 3, &memory[i].position);
+									std::copy(&inMesh->mNormals[i].x, (&inMesh->mNormals[i].x) + 3, &memory[i].normal);
+									std::copy(&inMesh->mTangents[i].x, (&inMesh->mTangents[i].x) + 3, &memory[i].tangent);
+									auto uv = inMesh->mTextureCoords[i];
+									memory[i].U = uv->x;
+									memory[i].V = uv->y;
+									memory[i].tangent.w = 0;
+								}
+								cubeVertexBuffer->Unmap(0, nullptr);
 							}
 
-							cubeVertexBufferViews[0] = D3D12_VERTEX_BUFFER_VIEW{
-								.BufferLocation = cubeVertexBuffers[0]->GetGPUVirtualAddress(),
+							cubeVertexBufferView = D3D12_VERTEX_BUFFER_VIEW{
+								.BufferLocation = cubeVertexBuffer->GetGPUVirtualAddress(),
 								.SizeInBytes = static_cast<UINT>(desc.Width),
-								.StrideInBytes = sizeof(SA::Vec3f),
+								.StrideInBytes = sizeof(Vertex),
 							};
-
-							const bool bSubmitSuccess = SubmitBufferToGPU(cubeVertexBuffers[0], desc.Width, inMesh->mVertices, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
-							if (!bSubmitSuccess)
-							{
-								SA_LOG(L"Cube Vertex Position Buffer submit failed!", Error, DX12);
-								return EXIT_FAILURE;
-							}
-						}
-
-						// Normal
-						{
-							const D3D12_HEAP_PROPERTIES heap{
-								.Type = D3D12_HEAP_TYPE_DEFAULT,
-							};
-
-							const D3D12_RESOURCE_DESC desc{
-								.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER,
-								.Alignment = 0,
-								.Width = sizeof(SA::Vec3f) * inMesh->mNumVertices,
-								.Height = 1,
-								.DepthOrArraySize = 1,
-								.MipLevels = 1,
-								.Format = DXGI_FORMAT_UNKNOWN,
-								.SampleDesc = {.Count = 1, .Quality = 0 },
-								.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-								.Flags = D3D12_RESOURCE_FLAG_NONE,
-							};
-
-							const HRESULT hrBufferCreated = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&cubeVertexBuffers[1]));
-							if (FAILED(hrBufferCreated))
-							{
-								SA_LOG(L"Create Cube Vertex Normal Buffer failed!", Error, DX12, (L"Error code: %1", hrBufferCreated));
-								return EXIT_FAILURE;
-							}
-							else
-							{
-								const LPCWSTR name = L"CubeVertexNormalBuffer";
-								cubeVertexBuffers[1]->SetName(name);
-
-								SA_LOG(L"Create Cube Vertex Normal Buffer success.", Info, DX12, (L"\"%1\" [%2]", name, cubeVertexBuffers[1].Get()));
-							}
-
-							cubeVertexBufferViews[1] = D3D12_VERTEX_BUFFER_VIEW{
-								.BufferLocation = cubeVertexBuffers[1]->GetGPUVirtualAddress(),
-								.SizeInBytes = static_cast<UINT>(desc.Width),
-								.StrideInBytes = sizeof(SA::Vec3f),
-							};
-
-							const bool bSubmitSuccess = SubmitBufferToGPU(cubeVertexBuffers[1], desc.Width, inMesh->mNormals, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
-							if (!bSubmitSuccess)
-							{
-								SA_LOG(L"Cube Vertex Normal Buffer submit failed!", Error, DX12);
-								return EXIT_FAILURE;
-							}
-						}
-
-						// Tangent
-						{
-							const D3D12_HEAP_PROPERTIES heap{
-								.Type = D3D12_HEAP_TYPE_DEFAULT,
-							};
-
-							const D3D12_RESOURCE_DESC desc{
-								.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER,
-								.Alignment = 0,
-								.Width = sizeof(SA::Vec3f) * inMesh->mNumVertices,
-								.Height = 1,
-								.DepthOrArraySize = 1,
-								.MipLevels = 1,
-								.Format = DXGI_FORMAT_UNKNOWN,
-								.SampleDesc = {.Count = 1, .Quality = 0 },
-								.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-								.Flags = D3D12_RESOURCE_FLAG_NONE,
-							};
-
-							const HRESULT hrBufferCreated = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&cubeVertexBuffers[2]));
-							if (FAILED(hrBufferCreated))
-							{
-								SA_LOG(L"Create Cube Vertex Tangent Buffer failed!", Error, DX12, (L"Error code: %1", hrBufferCreated));
-								return EXIT_FAILURE;
-							}
-							else
-							{
-								const LPCWSTR name = L"CubeVertexTangentBuffer";
-								cubeVertexBuffers[2]->SetName(name);
-
-								SA_LOG(L"Create Cube Vertex Tangent Buffer success.", Info, DX12, (L"\"%1\" [%2]", name, cubeVertexBuffers[2].Get()));
-							}
-
-							cubeVertexBufferViews[2] = D3D12_VERTEX_BUFFER_VIEW{
-								.BufferLocation = cubeVertexBuffers[2]->GetGPUVirtualAddress(),
-								.SizeInBytes = static_cast<UINT>(desc.Width),
-								.StrideInBytes = sizeof(SA::Vec3f),
-							};
-
-							const bool bSubmitSuccess = SubmitBufferToGPU(cubeVertexBuffers[2], desc.Width, inMesh->mTangents, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
-							if (!bSubmitSuccess)
-							{
-								SA_LOG(L"Cube Vertex Tangent Buffer submit failed!", Error, DX12);
-								return EXIT_FAILURE;
-							}
-						}
-
-						// UV
-						{
-							const D3D12_HEAP_PROPERTIES heap{
-								.Type = D3D12_HEAP_TYPE_DEFAULT,
-							};
-
-							const D3D12_RESOURCE_DESC desc{
-								.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER,
-								.Alignment = 0,
-								.Width = sizeof(SA::Vec2f) * inMesh->mNumVertices,
-								.Height = 1,
-								.DepthOrArraySize = 1,
-								.MipLevels = 1,
-								.Format = DXGI_FORMAT_UNKNOWN,
-								.SampleDesc = {.Count = 1, .Quality = 0 },
-								.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-								.Flags = D3D12_RESOURCE_FLAG_NONE,
-							};
-
-							const HRESULT hrBufferCreated = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&cubeVertexBuffers[3]));
-							if (FAILED(hrBufferCreated))
-							{
-								SA_LOG(L"Create Cube Vertex UV Buffer failed!", Error, DX12, (L"Error code: %1", hrBufferCreated));
-								return EXIT_FAILURE;
-							}
-							else
-							{
-								const LPCWSTR name = L"CubeVertexUVBuffer";
-								cubeVertexBuffers[3]->SetName(name);
-
-								SA_LOG(L"Create Cube Vertex UV Buffer success.", Info, DX12, (L"\"%1\" [%2]", name, cubeVertexBuffers[3].Get()));
-							}
-
-							cubeVertexBufferViews[3] = D3D12_VERTEX_BUFFER_VIEW{
-								.BufferLocation = cubeVertexBuffers[3]->GetGPUVirtualAddress(),
-								.SizeInBytes = static_cast<UINT>(desc.Width),
-								.StrideInBytes = sizeof(SA::Vec2f),
-							};
-
-							std::vector<SA::Vec2f> uvs;
-							uvs.reserve(inMesh->mNumVertices);
-
-							for (uint32_t i = 0; i < inMesh->mNumVertices; ++i)
-							{
-								uvs.push_back(SA::Vec2f{ inMesh->mTextureCoords[0][i].x, inMesh->mTextureCoords[0][i].y });
-							}
-
-							const bool bSubmitSuccess = SubmitBufferToGPU(cubeVertexBuffers[3], desc.Width, uvs.data(), D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
-							if (!bSubmitSuccess)
-							{
-								SA_LOG(L"Cube Vertex UV Buffer submit failed!", Error, DX12);
-								return EXIT_FAILURE;
-							}
 						}
 
 						// Index
@@ -2501,6 +2371,25 @@ int main()
 					cameraBuffer->Unmap(0, nullptr);
 				}
 
+				auto objectBuffer = cubeObjectBuffers[swapchainFrameIndex];
+				{
+					// Fill Data with updated values.
+
+					const SA::Mat4f transform = SA::Mat4f::MakeTranslation(cubePosition);
+					ObjectUBO objectUBO = {};
+
+					std::copy(transform.Data(), transform.Data() + 16, objectUBO.transform.Data());
+					objectUBO.level = 3;
+
+					// Memory mapping and Upload (CPU to GPU transfer).
+					const D3D12_RANGE range{ .Begin = 0, .End = 0 };
+					void* data = nullptr;
+
+					objectBuffer->Map(0, &range, reinterpret_cast<void**>(&data));
+					std::memcpy(data, &objectUBO, sizeof(ObjectUBO));
+					objectBuffer->Unmap(0, nullptr);
+				}
+
 
 				// Register Commands /* 0004-U */
 				{
@@ -2573,7 +2462,10 @@ int main()
 						*/
 						cmd->SetGraphicsRootSignature(litRootSign.Get());
 						cmd->SetGraphicsRootConstantBufferView(0, cameraBuffer->GetGPUVirtualAddress()); // Camera UBO
-						cmd->SetGraphicsRootConstantBufferView(1, cubeObjectBuffer->GetGPUVirtualAddress()); // Object UBO
+						cmd->SetGraphicsRootConstantBufferView(1, objectBuffer->GetGPUVirtualAddress()); // Object UBO
+						
+						cmd->SetGraphicsRootShaderResourceView(0, cubeVertexBuffer->GetGPUVirtualAddress()); // Vertex Buffer
+						cmd->SetGraphicsRootShaderResourceView(1, cubeIndexBuffer->GetGPUVirtualAddress()); // Vertex Buffer
 
 						const UINT srvOffset = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 						D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = pbrCubeSRVHeap->GetGPUDescriptorHandleForHeapStart();
@@ -2594,10 +2486,10 @@ int main()
 						cmd->SetPipelineState(litPipelineState.Get());
 
 						// Draw Cube
-						cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-						cmd->IASetVertexBuffers(0, static_cast<UINT>(cubeVertexBufferViews.size()), cubeVertexBufferViews.data());
-						cmd->IASetIndexBuffer(&cubeIndexBufferView);
-						cmd->DrawIndexedInstanced(cubeIndexCount, 1, 0, 0, 0);
+						//cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+						//cmd->IASetVertexBuffers(0, static_cast<UINT>(cubeVertexBufferViews.size()), cubeVertexBufferViews.data());
+						//cmd->IASetIndexBuffer(&cubeIndexBufferView);
+						cmd->DispatchMesh(1, 1, 1);
 					}
 
 
@@ -2692,21 +2584,9 @@ int main()
 						cubeIndexBuffer = nullptr;
 						cubeIndexBufferView = D3D12_INDEX_BUFFER_VIEW{};
 
-						SA_LOG(L"Destroying Cube Vertex Position Buffer...", Info, DX12, cubeVertexBuffers[0].Get());
-						cubeVertexBuffers[0] = nullptr;
-						cubeVertexBufferViews[0] = D3D12_VERTEX_BUFFER_VIEW{};
-
-						SA_LOG(L"Destroying Cube Normal Position Buffer...", Info, DX12, cubeVertexBuffers[1].Get());
-						cubeVertexBuffers[1] = nullptr;
-						cubeVertexBufferViews[1] = D3D12_VERTEX_BUFFER_VIEW{};
-
-						SA_LOG(L"Destroying Cube Tangent Position Buffer...", Info, DX12, cubeVertexBuffers[2].Get());
-						cubeVertexBuffers[2] = nullptr;
-						cubeVertexBufferViews[2] = D3D12_VERTEX_BUFFER_VIEW{};
-
-						SA_LOG(L"Destroying Cube UV Position Buffer...", Info, DX12, cubeVertexBuffers[3].Get());
-						cubeVertexBuffers[3] = nullptr;
-						cubeVertexBufferViews[3] = D3D12_VERTEX_BUFFER_VIEW{};
+						SA_LOG(L"Destroying Cube Vertex Buffer...", Info, DX12, cubeVertexBuffer.Get());
+						cubeVertexBuffer = nullptr;
+						cubeVertexBufferView = D3D12_VERTEX_BUFFER_VIEW{};
 					}
 				}
 			}
@@ -2725,8 +2605,11 @@ int main()
 
 				// Cube Object Buffer
 				{
-					SA_LOG(L"Destroying Cube Object Buffer...", Info, DX12, cubeObjectBuffer.Get());
-					cubeObjectBuffer = nullptr;
+					for (uint32_t i = 0; i < bufferingCount; ++i)
+					{
+						SA_LOG((L"Destroying Cube Object Buffer [%1]...", i), Info, DX12, cubeObjectBuffers[i].Get());
+						cubeObjectBuffers[i] = nullptr;
+					}
 				}
 
 				// PointLights Buffer
@@ -2761,8 +2644,8 @@ int main()
 
 					// Vertex Shader
 					{
-						SA_LOG(L"Destroying Lit Vertex Shader...", Info, DX12, litVertexShader.Get());
-						litVertexShader = nullptr;
+						//SA_LOG(L"Destroying Lit Vertex Shader...", Info, DX12, litVertexShader.Get());
+						//litVertexShader = nullptr;
 					}
 
 					// RootSignature

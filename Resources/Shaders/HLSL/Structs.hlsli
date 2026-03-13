@@ -1,17 +1,10 @@
-
-#define ROOT_SIG \
-    "CBV(b0), \
-     RootConstants(b1, num32BitConstants = 2), \
-     DescriptorTable( CBV(b2, numDescriptors = 8), \
-                      SRV(t0, numDescriptors = 32)), \
-     SRV(t32)"
+// Shared structs
 
 struct VertexFactory
 {
-	float3 position : POSITION;
-	float3 normal : NORMAL;
-	float3 tangent : TANGENT;
-	float2 uv : TEXCOORD;
+	float4 positionU;
+	float4 normalV;
+	float4 tangent;
 };
 
 struct VertexOutput
