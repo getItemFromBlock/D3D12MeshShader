@@ -1,4 +1,4 @@
-#include "Structs.hlsli"
+#include "CubeData.hlsli"
 
 struct Camera
 {
@@ -20,14 +20,11 @@ cbuffer ObjectBuffer : register(b1)
 	Object object;
 };
 
-StructuredBuffer<VertexFactory>	Vertices : register(t0);
-StructuredBuffer<uint>			PrimitiveIndices : register(t1);
-
 // Mesh Shader
 
 VertexOutput GetVertexAttributes(uint vertexIndex)
 {
-    VertexFactory v = Vertices[vertexIndex];
+    VertexInput v = GetCubeVertice(vertexIndex);
 	VertexOutput output;
 
 	//---------- Position ----------
@@ -67,31 +64,20 @@ void main(
     out indices uint3 tris[MAX_PRIMS])
 {
 
-	uint numVerticesInThreadGroup;
-    uint numPrimitivesInThreadGroup;
-    uint packedConnectivityForThisLanesPrimitive;
-    ReadTriangleListIndices(
-        numVerticesInThreadGroup, // out
-        numPrimitivesInThreadGroup, // out
-        indices, // out
-        packedConnectivityForThisLanesPrimitive, // out
-        PrimitiveIndices, // SRV with the offline made IB
-        tig, // Thread group index
-        false); // 32 bit per index
+	uint numVerticesInThreadGroup = MAX_VERTS;
+    uint numPrimitivesInThreadGroup = MAX_PRIMS;
+
 	
 	SetMeshOutputCounts(numVerticesInThreadGroup, numPrimitivesInThreadGroup);
 	
 	
     if (tig < numVerticesInThreadGroup)
     {
-        verts[tig] = GetVertexAttributes(indices[tig]);
+        verts[tig] = GetVertexAttributes(tig);
     }
 
     if (tig < numPrimitivesInThreadGroup)
     {
-        tris[tig] = uint3(
-            packedConnectivityForThisLanesPrimitive & 0xFF,
-            (packedConnectivityForThisLanesPrimitive >> 8) & 0xFF,
-            (packedConnectivityForThisLanesPrimitive >> 16) & 0xFF);
+        tris[tig] = GetIndices(tig);
     }
 }

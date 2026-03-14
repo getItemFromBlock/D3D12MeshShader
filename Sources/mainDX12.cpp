@@ -412,6 +412,7 @@ struct ObjectUBO
 {
 	SA::Mat4f	transform;
 	uint32_t	level;
+	uint32_t padding[15];
 };
 constexpr SA::Vec3f cubePosition(0.5f, 0.0f, 2.0f);
 std::array<MComPtr<ID3D12Resource>, bufferingCount> cubeObjectBuffers;
@@ -700,15 +701,7 @@ struct Vertex
 };
 
 // = Base sponge cube =
-MComPtr<ID3D12Resource> cubeVertexBuffer; // VkBuffer -> ID3D12Resource
-/**
-* Vulkan binds the buffer directly
-* DirectX12 create 'views' (aka. how to read the memory) of buffers and use them for binding.
-*/
-D3D12_VERTEX_BUFFER_VIEW cubeVertexBufferView;
-uint32_t cubeIndexCount = 0u;
-MComPtr<ID3D12Resource> cubeIndexBuffer;
-D3D12_INDEX_BUFFER_VIEW cubeIndexBufferView;
+uint32_t cubeIndexCount = 36;
 
 // = RustedIron2 PBR =
 MComPtr<ID3D12Resource> rustedIron2AlbedoTexture; // VkImage + VkDeviceMemory -> ID3D12Resource
@@ -1285,7 +1278,7 @@ int main()
 									.RegisterSpace = 0,
 									.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE,
 								},
-								.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX,
+								.ShaderVisibility = D3D12_SHADER_VISIBILITY_MESH,
 							},
 							// Object Constant buffer
 							{
@@ -1295,7 +1288,7 @@ int main()
 									.RegisterSpace = 0,
 									.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE,
 								},
-								.ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX,
+								.ShaderVisibility = D3D12_SHADER_VISIBILITY_MESH,
 							},
 							// Point Lights Structured buffer
 							{
@@ -1410,7 +1403,7 @@ int main()
 					// Mesh Shader
 					{
 						std::wstring def = L"NUM_THREADS=" + std::to_wstring(threadCount);
-						meshShader = CompileShader(L"Resources/Shaders/HLSL/MeshShader.hlsl", L"main", L"ps_6_7", {def});
+						meshShader = CompileShader(L"Resources/Shaders/HLSL/MeshShader.hlsl", L"main", L"ms_6_7", {def});
 
 						if (!meshShader)
 							return EXIT_FAILURE;
@@ -1455,7 +1448,7 @@ int main()
 						const D3D12_RASTERIZER_DESC raster{
 							.FillMode = D3D12_FILL_MODE_SOLID,
 							.CullMode = D3D12_CULL_MODE_BACK,
-							.FrontCounterClockwise = FALSE,
+							.FrontCounterClockwise = TRUE,
 							.DepthBias = D3D12_DEFAULT_DEPTH_BIAS,
 							.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP,
 							.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS,
@@ -1489,48 +1482,9 @@ int main()
 							}
 						};
 
-						D3D12_INPUT_ELEMENT_DESC inputElems[]{
-							{
-								.SemanticName = "POSITION",
-								.SemanticIndex = 0,
-								.Format = DXGI_FORMAT_R32G32B32_FLOAT,
-									.InputSlot = 0,
-									.AlignedByteOffset = 0,
-									.InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-									.InstanceDataStepRate = 0
-							},
-							{
-								.SemanticName = "NORMAL",
-								.SemanticIndex = 0,
-								.Format = DXGI_FORMAT_R32G32B32_FLOAT,
-								.InputSlot = 1,
-								.AlignedByteOffset = 0,
-								.InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-								.InstanceDataStepRate = 0
-							},
-							{
-								.SemanticName = "TANGENT",
-								.SemanticIndex = 0,
-								.Format = DXGI_FORMAT_R32G32B32_FLOAT,
-								.InputSlot = 2,
-								.AlignedByteOffset = 0,
-								.InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-								.InstanceDataStepRate = 0
-							},
-							{
-								.SemanticName = "TEXCOORD",
-								.SemanticIndex = 0,
-								.Format = DXGI_FORMAT_R32G32_FLOAT,
-								.InputSlot = 3,
-								.AlignedByteOffset = 0,
-								.InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
-								.InstanceDataStepRate = 0
-							}
-						};
-
 						D3DX12_MESH_SHADER_PIPELINE_STATE_DESC psoDesc = {};
 						psoDesc.pRootSignature    = litRootSign.Get();
-						psoDesc.AS                = { ampShader->GetBufferPointer(), ampShader->GetBufferSize() };
+						//psoDesc.AS                = { ampShader->GetBufferPointer(), ampShader->GetBufferSize() };
 						psoDesc.MS                = { meshShader->GetBufferPointer(), meshShader->GetBufferSize() };
 						psoDesc.PS                = { litPixelShader->GetBufferPointer(), litPixelShader->GetBufferSize() };
 						psoDesc.NumRenderTargets  = 1;
@@ -1639,7 +1593,7 @@ int main()
 				// Cube Object Buffer
 				{
 					const D3D12_HEAP_PROPERTIES heap{
-						.Type = D3D12_HEAP_TYPE_DEFAULT,
+						.Type = D3D12_HEAP_TYPE_UPLOAD,
 					};
 
 					const D3D12_RESOURCE_DESC desc{
@@ -1751,145 +1705,6 @@ int main()
 			// Resources /* 0010-I */
 			if (true)
 			{
-				Assimp::Importer importer;
-
-				// Meshes
-				{
-					// Cube
-					{
-						const char* path = "Resources/Models/Shapes/cube.obj";
-						const aiScene* scene = importer.ReadFile(path, aiProcess_CalcTangentSpace | aiProcess_ConvertToLeftHanded);
-						if (!scene)
-						{
-							SA_LOG(L"Assimp loading failed!", Error, Assimp, path);
-							return EXIT_FAILURE;
-						}
-
-						const aiMesh* inMesh = scene->mMeshes[0];
-
-						// Vertices
-						{
-							/**
-							* VkMemoryPropertyFlagBits -> D3D12_HEAP_PROPERTIES.Type
-							* Defines if a buffer is GPU only, CPU-GPU, ...
-							* In Vulkan, a buffer can be GPU only or CPU-GPU for data transfer (read and write).
-							* In DirectX12, a buffer is either GPU only (default), 'Upload' for data transfer from CPU to GPU, or 'Readback' for data transfer from GPU to CPU.
-							* 'Upload' and 'Readback' at the same time is NOT possible.
-							*/
-							const D3D12_HEAP_PROPERTIES heap{
-								.Type = D3D12_HEAP_TYPE_DEFAULT, // Type Default is GPU only.
-							};
-
-							const D3D12_RESOURCE_DESC desc{
-								.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER,
-								.Alignment = 0,
-								.Width = sizeof(Vertex) * inMesh->mNumVertices,
-								.Height = 1,
-								.DepthOrArraySize = 1,
-								.MipLevels = 1,
-								.Format = DXGI_FORMAT_UNKNOWN,
-								.SampleDesc = {.Count = 1, .Quality = 0 },
-								.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-								.Flags = D3D12_RESOURCE_FLAG_NONE,
-							};
-
-							const HRESULT hrBufferCreated = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&cubeVertexBuffer));
-							if (FAILED(hrBufferCreated))
-							{
-								SA_LOG(L"Create Cube Vertex Position Buffer failed!", Error, DX12, (L"Error code: %1", hrBufferCreated));
-								return EXIT_FAILURE;
-							}
-							else
-							{
-								const LPCWSTR name = L"CubeVertexBuffer";
-								cubeVertexBuffer->SetName(name);
-
-								SA_LOG(L"Create Cube Vertex Buffer success.", Info, DX12, (L"\"%1\" [%2]", name, cubeVertexBuffer.Get()));
-
-								Vertex *memory = nullptr;
-								cubeVertexBuffer->Map(0, nullptr, reinterpret_cast<void**>(&memory));
-								for (uint32_t i = 0; i < inMesh->mVertices->Length(); i++)
-								{
-									std::copy(&inMesh->mVertices[i].x, (&inMesh->mVertices[i].x) + 3, &memory[i].position);
-									std::copy(&inMesh->mNormals[i].x, (&inMesh->mNormals[i].x) + 3, &memory[i].normal);
-									std::copy(&inMesh->mTangents[i].x, (&inMesh->mTangents[i].x) + 3, &memory[i].tangent);
-									auto uv = inMesh->mTextureCoords[i];
-									memory[i].U = uv->x;
-									memory[i].V = uv->y;
-									memory[i].tangent.w = 0;
-								}
-								cubeVertexBuffer->Unmap(0, nullptr);
-							}
-
-							cubeVertexBufferView = D3D12_VERTEX_BUFFER_VIEW{
-								.BufferLocation = cubeVertexBuffer->GetGPUVirtualAddress(),
-								.SizeInBytes = static_cast<UINT>(desc.Width),
-								.StrideInBytes = sizeof(Vertex),
-							};
-						}
-
-						// Index
-						{
-							const D3D12_HEAP_PROPERTIES heap{
-								.Type = D3D12_HEAP_TYPE_DEFAULT,
-							};
-
-							const D3D12_RESOURCE_DESC desc{
-								.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER,
-								.Alignment = 0,
-								.Width = sizeof(uint16_t) * inMesh->mNumFaces * 3,
-								.Height = 1,
-								.DepthOrArraySize = 1,
-								.MipLevels = 1,
-								.Format = DXGI_FORMAT_UNKNOWN,
-								.SampleDesc = {.Count = 1, .Quality = 0 },
-								.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-								.Flags = D3D12_RESOURCE_FLAG_NONE,
-							};
-
-							const HRESULT hrBufferCreated = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&cubeIndexBuffer));
-							if (FAILED(hrBufferCreated))
-							{
-								SA_LOG(L"Create Cube Index Buffer failed!", Error, DX12, (L"Error code: %1", hrBufferCreated));
-								return EXIT_FAILURE;
-							}
-							else
-							{
-								const LPCWSTR name = L"CubeIndexBuffer";
-								cubeIndexBuffer->SetName(name);
-
-								SA_LOG(L"Create Cube Index Buffer success.", Info, DX12, (L"\"%1\" [%2]", name, cubeIndexBuffer.Get()));
-							}
-
-							cubeIndexBufferView = D3D12_INDEX_BUFFER_VIEW{
-								.BufferLocation = cubeIndexBuffer->GetGPUVirtualAddress(),
-								.SizeInBytes = static_cast<UINT>(desc.Width),
-								.Format = DXGI_FORMAT_R16_UINT, // This model's indices are lower than 65535.
-							};
-
-
-							// Pack indices into uint16_t since max index < 65535.
-							std::vector<uint16_t> indices;
-							indices.resize(inMesh->mNumFaces * 3);
-							cubeIndexCount = inMesh->mNumFaces * 3;
-
-							for (unsigned int i = 0; i < inMesh->mNumFaces; ++i)
-							{
-								indices[i * 3] = static_cast<uint16_t>(inMesh->mFaces[i].mIndices[0]);
-								indices[i * 3 + 1] = static_cast<uint16_t>(inMesh->mFaces[i].mIndices[1]);
-								indices[i * 3 + 2] = static_cast<uint16_t>(inMesh->mFaces[i].mIndices[2]);
-							}
-
-							const bool bSubmitSuccess = SubmitBufferToGPU(cubeIndexBuffer, desc.Width, indices.data(), D3D12_RESOURCE_STATE_INDEX_BUFFER);
-							if (!bSubmitSuccess)
-							{
-								SA_LOG(L"Cube Index Buffer submit failed!", Error, DX12);
-								return EXIT_FAILURE;
-							}
-						}
-					}
-				}
-
 				// Textures
 				if (true)
 				{
@@ -2463,9 +2278,6 @@ int main()
 						cmd->SetGraphicsRootSignature(litRootSign.Get());
 						cmd->SetGraphicsRootConstantBufferView(0, cameraBuffer->GetGPUVirtualAddress()); // Camera UBO
 						cmd->SetGraphicsRootConstantBufferView(1, objectBuffer->GetGPUVirtualAddress()); // Object UBO
-						
-						cmd->SetGraphicsRootShaderResourceView(0, cubeVertexBuffer->GetGPUVirtualAddress()); // Vertex Buffer
-						cmd->SetGraphicsRootShaderResourceView(1, cubeIndexBuffer->GetGPUVirtualAddress()); // Vertex Buffer
 
 						const UINT srvOffset = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 						D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = pbrCubeSRVHeap->GetGPUDescriptorHandleForHeapStart();
@@ -2573,20 +2385,6 @@ int main()
 
 						SA_LOG(L"Destroying RustedIron2 Albedo Texture...", Info, DX12, rustedIron2AlbedoTexture.Get());
 						rustedIron2AlbedoTexture = nullptr;
-					}
-				}
-
-				// Meshes
-				{
-					// Cube
-					{
-						SA_LOG(L"Destroying Cube Index Buffer...", Info, DX12, cubeIndexBuffer.Get());
-						cubeIndexBuffer = nullptr;
-						cubeIndexBufferView = D3D12_INDEX_BUFFER_VIEW{};
-
-						SA_LOG(L"Destroying Cube Vertex Buffer...", Info, DX12, cubeVertexBuffer.Get());
-						cubeVertexBuffer = nullptr;
-						cubeVertexBufferView = D3D12_VERTEX_BUFFER_VIEW{};
 					}
 				}
 			}

@@ -1,6 +1,6 @@
 // Shared structs
 
-struct VertexFactory
+struct VertexInput
 {
 	float4 positionU;
 	float4 normalV;
