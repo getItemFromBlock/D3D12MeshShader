@@ -168,7 +168,7 @@ namespace SA
 	template <typename T>
 	bool Quat<T>::IsNormalized() const noexcept
 	{
-		return Maths::Equals1(SqrLength());
+		return Maths::Equals1(SqrLength(), 0.0001f);
 	}
 
 //}

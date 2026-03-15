@@ -28,6 +28,43 @@ static const uint3 _cubeIndices[] =
     uint3(22,21,23)
 };
 
+static const float3 _cubePositions[] =
+{
+    float3(0, 0, 0),
+    float3(1, 0, 0),
+    float3(2, 0, 0),
+    float3(0, 0, 1),
+    float3(2, 0, 1),
+    float3(0, 0, 2),
+    float3(1, 0, 2),
+    float3(2, 0, 2),
+    
+    float3(0, 1, 0),
+    float3(2, 1, 0),
+    float3(0, 1, 2),
+    float3(2, 1, 2),
+    
+    float3(0, 2, 0),
+    float3(1, 2, 0),
+    float3(2, 2, 0),
+    float3(0, 2, 1),
+    float3(2, 2, 1),
+    float3(0, 2, 2),
+    float3(1, 2, 2),
+    float3(2, 2, 2),
+};
+
+static const uint _countTable[] =
+{
+    1, 1,
+    20, 1,
+    20, 20,
+    400, 20,
+    400, 400,
+    8000, 400,
+    8000, 8000
+};
+
 static const VertexInput _cubeVertices[] =
 {
     {float4(0, 0, 0, 0), float4(0, 0, 0, 0), float4(0, 0, 0, 0)},
@@ -81,4 +118,16 @@ VertexInput GetCubeVertice(int id)
     res.tangent = float4(0, 0, 0, 0);
     res.tangent[(t1 + 2) % 3] = t1 < 3 ? -1.f : 1.f;
     return res;
+}
+
+float3 GetCubePosition(uint pos)
+{
+    return _cubePositions[pos];
+}
+
+uint3 GetDimensions(uint level)
+{
+    level = min(level, 6);
+    return uint3(_countTable[level * 2], _countTable[level * 2 + 1], 1);
+
 }

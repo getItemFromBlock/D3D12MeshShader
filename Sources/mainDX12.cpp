@@ -402,8 +402,8 @@ struct CameraUBO
 SA::TransformPRf cameraTr;
 constexpr float cameraMoveSpeed = 4.0f;
 constexpr float cameraRotSpeed = 16.0f;
-constexpr float cameraNear = 0.05f;
-constexpr float cameraFar = 10000.0f;
+constexpr float cameraNear = 0.01f;
+constexpr float cameraFar = 500.0f;
 constexpr float cameraFOV = 90.0f;
 std::array<MComPtr<ID3D12Resource>, bufferingCount> cameraBuffers;
 
@@ -701,7 +701,8 @@ struct Vertex
 };
 
 // = Base sponge cube =
-uint32_t cubeIndexCount = 36;
+const uint32_t cubeIndexCount = 36;
+const uint32_t maxLevel = 4;
 
 // = RustedIron2 PBR =
 MComPtr<ID3D12Resource> rustedIron2AlbedoTexture; // VkImage + VkDeviceMemory -> ID3D12Resource
@@ -2194,7 +2195,7 @@ int main()
 					ObjectUBO objectUBO = {};
 
 					std::copy(transform.Data(), transform.Data() + 16, objectUBO.transform.Data());
-					objectUBO.level = 3;
+					objectUBO.level = maxLevel;
 
 					// Memory mapping and Upload (CPU to GPU transfer).
 					const D3D12_RANGE range{ .Begin = 0, .End = 0 };
@@ -2301,7 +2302,23 @@ int main()
 						//cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 						//cmd->IASetVertexBuffers(0, static_cast<UINT>(cubeVertexBufferViews.size()), cubeVertexBufferViews.data());
 						//cmd->IASetIndexBuffer(&cubeIndexBufferView);
-						cmd->DispatchMesh(1, 1, 1);
+						
+						const uint32_t countTable0[] = {
+							1, 1,
+							20, 1,
+							20, 20,
+							400, 20,
+							400, 400,
+							8000, 400,
+							8000, 8000
+						};
+						const uint32_t countTable1[] = {
+							20, 400, 8000,
+						};
+						
+						uint32_t id = std::min((maxLevel), 6u);
+						uint32_t mult = id > 6 ? countTable1[id-7] : 1;
+						cmd->DispatchMesh(countTable0[id * 2], countTable0[id * 2 + 1], mult);
 					}
 
 
