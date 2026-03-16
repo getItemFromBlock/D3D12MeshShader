@@ -702,7 +702,7 @@ struct Vertex
 
 // = Base sponge cube =
 const uint32_t cubeIndexCount = 36;
-const uint32_t maxLevel = 4;
+uint32_t maxLevel = 5;
 
 // = RustedIron2 PBR =
 MComPtr<ID3D12Resource> rustedIron2AlbedoTexture; // VkImage + VkDeviceMemory -> ID3D12Resource
@@ -2087,6 +2087,8 @@ int main()
 			float deltaTime = std::chrono::duration_cast<std::chrono::duration<float, std::milli>>(end - start).count();
 			accumulateTime += deltaTime;
 			start = end;
+
+			maxLevel = (uint32_t)(3.0 + sin(glfwGetTime()) * 2.5);
 
 			// Fixed Update
 			if (accumulateTime >= fixedTime)

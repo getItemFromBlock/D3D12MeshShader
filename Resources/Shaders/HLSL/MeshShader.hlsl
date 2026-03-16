@@ -24,12 +24,11 @@ cbuffer ObjectBuffer : register(b1)
 
 VertexOutput GetVertexAttributes(float3 offset, float scale, uint vertexIndex)
 {
-    VertexInput v = GetCubeVertice(vertexIndex);
+    VertexInput v = GetCubeVertice(vertexIndex, offset, scale);
 	VertexOutput output;
 
 	//---------- Position ----------
-    float3 pos = v.positionU.xyz * scale + offset;
-	const float4 worldPosition4 = mul(object.transform, float4(pos, 1.0));
+    const float4 worldPosition4 = mul(object.transform, float4(v.positionU.xyz, 1.0));
 	output.worldPosition = worldPosition4.xyz / worldPosition4.w;
 	output.svPosition = mul(camera.invViewProj, worldPosition4);
 	output.viewPosition = float3(camera.view._14, camera.view._24, camera.view._34);
@@ -65,31 +64,47 @@ void main(
 
     uint numVerticesInThreadGroup = MAX_VERTS;
     uint numPrimitivesInThreadGroup = MAX_PRIMS;
-    uint3 offset = uint3(0,0,0);
-    uint scale = 1;
+    float3 offset = float3(0,0,0);
+    float scale = 1;
     
     uint3 dims = GetDimensions(object.level);
     uint uniqueID = tid.x + dims.x * (tid.y + dims.y * tid.z);
+    uint faceCullMask = 0x00;
 	
     for (uint i = 0; i < object.level; i++)
     {
         uint id = uniqueID % 20;
         uniqueID = uniqueID / 20;
+        
+        uint mask = GetCubeFaceKeep(id);
+        faceCullMask = (GetCubeFaceCull(id) & (~mask)) | (mask & faceCullMask);
 		
-        offset = offset * 3 + GetCubePosition(id);
-        scale *= 3;
+        scale /= 3;
+        offset += GetCubePosition(id) * scale;
     }
-	
+    offset = offset * 2 - (1 - scale);
+    
+    uint off = 0;
+    for (uint i = 0; i < 6; i++)
+    {
+        if ((faceCullMask >> i) & 0x01)
+        {
+            numPrimitivesInThreadGroup -= 2;
+            //numVerticesInThreadGroup -= 4;
+            if ((tig.x / 2) + off >= i)
+                off++;
+        }
+    }
+    
     SetMeshOutputCounts(numVerticesInThreadGroup, numPrimitivesInThreadGroup);
 	
-    if (tig.x < numVerticesInThreadGroup)
+    if (tig.x < MAX_VERTS)
     {
-        float3 off = float3(offset) / scale;
-        verts[tig.x] = GetVertexAttributes(off, 1 / (float(scale * 2)), tig.x);
+        verts[tig.x] = GetVertexAttributes(offset, scale, tig.x);
     }
 
     if (tig.x < numPrimitivesInThreadGroup)
     {
-        tris[tig.x] = GetIndices(tig.x);
+        tris[tig.x] = GetIndices(tig.x + off * 2);
     }
 }
